@@ -4,6 +4,7 @@ import com.miao.portfolio.io.TradeCsvReader;
 import com.miao.portfolio.model.Portfolio;
 import com.miao.portfolio.model.Trade;
 import com.miao.portfolio.report.PortfolioReportGenerator;
+import com.miao.portfolio.web.PortfolioWebServer;
 
 import java.io.IOException;
 import java.io.InputStream;
@@ -14,35 +15,51 @@ import java.math.BigDecimal;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 
 /**
  * Command-line entry point: reads a trade CSV, applies it to a fresh
- * {@link Portfolio}, and prints a P&amp;L report.
+ * {@link Portfolio}, and either prints a text P&amp;L report or serves it
+ * as a live local web dashboard.
  *
- * <p>Usage: {@code java -jar portfolio-tracker.jar [trades.csv] [prices.csv]}</p>
+ * <p>Usage: {@code java -jar portfolio-tracker.jar [--web] [trades.csv] [prices.csv]}</p>
  *
- * <p>Both arguments are optional. With no arguments, a bundled sample
- * trade blotter and price sheet are used so the jar produces useful
- * output immediately. {@code prices.csv} is a simple {@code symbol,price}
- * file, one line per open symbol.</p>
+ * <p>{@code trades.csv} and {@code prices.csv} are optional; with neither
+ * given, a bundled sample trade blotter and price sheet are used so the
+ * jar produces useful output immediately. {@code prices.csv} is a simple
+ * {@code symbol,price} file, one line per open symbol. Passing
+ * {@code --web} (in any position) starts a browser dashboard on
+ * {@code http://localhost:8080/} instead of printing to the console.</p>
  */
 public final class App {
 
+    private static final int WEB_PORT = 8080;
+
     public static void main(String[] args) throws IOException {
+        boolean webMode = false;
+        List<String> positional = new ArrayList<>();
+        for (String arg : args) {
+            if (arg.equals("--web")) {
+                webMode = true;
+            } else {
+                positional.add(arg);
+            }
+        }
+
         List<Trade> trades;
         Map<String, BigDecimal> marketPrices;
 
-        if (args.length >= 1) {
-            trades = TradeCsvReader.read(Path.of(args[0]));
+        if (!positional.isEmpty()) {
+            trades = TradeCsvReader.read(Path.of(positional.get(0)));
         } else {
             trades = TradeCsvReader.read(openBundledReader("/sample-trades.csv"));
         }
 
-        if (args.length >= 2) {
-            marketPrices = readPrices(Path.of(args[1]));
+        if (positional.size() >= 2) {
+            marketPrices = readPrices(Path.of(positional.get(1)));
         } else {
             marketPrices = readPrices(openBundledReader("/sample-prices.csv"));
         }
@@ -50,7 +67,14 @@ public final class App {
         Portfolio portfolio = new Portfolio();
         portfolio.applyTrades(trades);
 
-        System.out.print(PortfolioReportGenerator.generate(portfolio, marketPrices));
+        if (webMode) {
+            PortfolioWebServer server = new PortfolioWebServer(portfolio, marketPrices, WEB_PORT);
+            server.start();
+            System.out.println("Portfolio dashboard running at " + server.getUrl());
+            System.out.println("Press Ctrl+C to stop.");
+        } else {
+            System.out.print(PortfolioReportGenerator.generate(portfolio, marketPrices));
+        }
     }
 
     private static Reader openBundledReader(String resourcePath) {
