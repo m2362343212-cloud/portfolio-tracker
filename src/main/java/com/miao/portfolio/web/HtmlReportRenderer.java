@@ -2,6 +2,7 @@ package com.miao.portfolio.web;
 
 import com.miao.portfolio.model.Portfolio;
 import com.miao.portfolio.model.Position;
+import com.miao.portfolio.optimize.OptimizationResult;
 
 import java.math.BigDecimal;
 import java.math.RoundingMode;
@@ -14,7 +15,11 @@ import java.util.Map;
 /**
  * Renders a {@link Portfolio}'s current state as a single self-contained
  * HTML page: a summary of realized/unrealized P&amp;L and market value,
- * a table of open positions, and a table of closed ones.
+ * a table of open positions, a table of closed ones, and -- when the CLI
+ * was run with {@code --optimize} and/or {@code --bayesian} -- an
+ * Optimization section showing the same suggested weights (and, for
+ * Black-Litterman, the same expected-return tables) that would otherwise
+ * only be visible in the console output.
  *
  * <p>Kept separate from {@link Portfolio}/{@link Position} for the same
  * reason {@code PortfolioReportGenerator} is: the domain classes shouldn't
@@ -28,7 +33,24 @@ public final class HtmlReportRenderer {
     private HtmlReportRenderer() {
     }
 
+    /** One suggested-weights table for the Optimization section (mirrors {@code OptimizationReportGenerator}). */
+    public record WeightTable(String title, OptimizationResult result) {
+    }
+
+    /**
+     * One expected-return comparison table for the Optimization section -- used to show the
+     * Black-Litterman prior (market-implied) returns next to the posterior (view-adjusted) ones.
+     */
+    public record ReturnsTable(String title, List<String> symbols, String beforeLabel, double[] beforeReturns,
+                                String afterLabel, double[] afterReturns, String note) {
+    }
+
     public static String render(Portfolio portfolio, Map<String, BigDecimal> marketPrices) {
+        return render(portfolio, marketPrices, List.of(), List.of());
+    }
+
+    public static String render(Portfolio portfolio, Map<String, BigDecimal> marketPrices,
+                                 List<ReturnsTable> returnsTables, List<WeightTable> weightTables) {
         List<Position> open = portfolio.getOpenPositions().stream()
                 .sorted(Comparator.comparing(Position::getSymbol))
                 .toList();
@@ -105,8 +127,61 @@ public final class HtmlReportRenderer {
         }
         html.append("</section>\n");
 
+        if (!returnsTables.isEmpty() || !weightTables.isEmpty()) {
+            html.append("<section>\n<h2>Optimization</h2>\n");
+            for (ReturnsTable rt : returnsTables) {
+                html.append(renderReturnsTable(rt));
+            }
+            for (WeightTable wt : weightTables) {
+                html.append(renderWeightTable(wt));
+            }
+            html.append("</section>\n");
+        }
+
         html.append("</div>\n</body>\n</html>\n");
         return html.toString();
+    }
+
+    private static String renderReturnsTable(ReturnsTable rt) {
+        StringBuilder html = new StringBuilder();
+        html.append("<h3>").append(escape(rt.title())).append("</h3>\n");
+        if (rt.note() != null && !rt.note().isBlank()) {
+            html.append("<p class=\"empty\">").append(escape(rt.note())).append("</p>\n");
+        }
+        html.append("<table>\n<thead><tr><th>Symbol</th><th>")
+                .append(escape(rt.beforeLabel())).append("</th><th>")
+                .append(escape(rt.afterLabel())).append("</th></tr></thead>\n<tbody>\n");
+        List<String> symbols = rt.symbols();
+        for (int i = 0; i < symbols.size(); i++) {
+            html.append("<tr>");
+            html.append("<td class=\"symbol\">").append(escape(symbols.get(i))).append("</td>");
+            html.append("<td>").append(percent(rt.beforeReturns()[i])).append("</td>");
+            html.append("<td>").append(percent(rt.afterReturns()[i])).append("</td>");
+            html.append("</tr>\n");
+        }
+        html.append("</tbody>\n</table>\n");
+        return html.toString();
+    }
+
+    private static String renderWeightTable(WeightTable wt) {
+        StringBuilder html = new StringBuilder();
+        html.append("<h3>").append(escape(wt.title())).append("</h3>\n");
+        html.append("<table>\n<thead><tr><th>Symbol</th><th>Weight</th></tr></thead>\n<tbody>\n");
+        for (Map.Entry<String, Double> entry : wt.result().getWeights().entrySet()) {
+            html.append("<tr>");
+            html.append("<td class=\"symbol\">").append(escape(entry.getKey())).append("</td>");
+            html.append("<td>").append(percent(entry.getValue())).append("</td>");
+            html.append("</tr>\n");
+        }
+        html.append("</tbody>\n</table>\n");
+        html.append("<p class=\"empty\">Expected return: ").append(percent(wt.result().getExpectedReturn()))
+                .append(" &middot; Volatility: ").append(percent(wt.result().getStandardDeviation()))
+                .append(" &middot; converged after ").append(wt.result().getIterations()).append(" iterations</p>\n");
+        return html.toString();
+    }
+
+    private static String percent(double value) {
+        return "%.2f%%".formatted(value * 100);
     }
 
     private static BigDecimal safeTotalUnrealized(Portfolio portfolio, Map<String, BigDecimal> prices, List<Position> open) {
@@ -175,6 +250,8 @@ public final class HtmlReportRenderer {
             .card-label { font-size: 13px; color: #666; }
             .card-value { font-size: 24px; font-weight: 600; }
             h2 { font-size: 18px; margin: 0 0 12px; }
+            h3 { font-size: 14px; margin: 20px 0 8px; color: #444; }
+            h3:first-of-type { margin-top: 0; }
             section { margin-bottom: 32px; }
             table { width: 100%; border-collapse: collapse; background: #fff; border-radius: 10px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,0.04); }
             th, td { text-align: right; padding: 10px 14px; border-bottom: 1px solid #eee; font-variant-numeric: tabular-nums; }
@@ -193,6 +270,7 @@ public final class HtmlReportRenderer {
                 .timestamp { color: #9a9a9a; }
                 .positive { color: #3fbf6f; }
                 .negative { color: #ff6b5e; }
+                h3 { color: #b0b0b0; }
             }
             """;
 }
