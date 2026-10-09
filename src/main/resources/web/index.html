@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Portfolio Tracker</title>
+<style>
+  :root { --bg:#fff; --fg:#1d1d1f; --muted:#6e6e73; --line:#e5e5ea; --card:#f5f5f7; --gain:#1a7f37; --loss:#c62828; }
+  @media (prefers-color-scheme: dark) {
+    :root { --bg:#111; --fg:#f2f2f2; --muted:#a1a1a6; --line:#2c2c2e; --card:#1c1c1e; --gain:#4ac26b; --loss:#ff6b6b; }
+  }
+  body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 system-ui, sans-serif; }
+  .page { max-width:960px; margin:0 auto; padding:24px 16px; }
+  .stats { display:grid; grid-template-columns:repeat(auto-fit,minmax(200px,1fr)); gap:12px; margin:16px 0; }
+  .card { background:var(--card); border-radius:10px; padding:14px; }
+  .card .label { color:var(--muted); font-size:13px; }
+  .card .value { font-size:22px; font-weight:600; }
+  table { width:100%; border-collapse:collapse; margin-bottom:24px; }
+  th, td { text-align:right; padding:8px; border-bottom:1px solid var(--line); }
+  th:first-child, td:first-child { text-align:left; }
+  th { cursor:pointer; user-select:none; color:var(--muted); font-weight:500; }
+  .gain { color:var(--gain); } .loss { color:var(--loss); }
+  .upload { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  #message { min-height:1.5em; }
+  #message.error { color:var(--loss); }
+  a { color:inherit; } .report-link { color:var(--muted); margin-top:-8px; }
+</style>
+</head>
+<body>
+<div class="page">
+  <h1>Portfolio Tracker</h1>
+  <p class="report-link"><a href="/report">Full report, including optimization results &rarr;</a></p>
+  <div class="upload">
+    <input type="file" id="file" accept=".csv">
+    <button id="upload">Upload trades</button>
+    <span id="message"></span>
+  </div>
+
+  <section class="stats">
+    <div class="card"><div class="label">Total Realized P&amp;L</div><div class="value" id="realized">–</div></div>
+    <div class="card"><div class="label">Total Unrealized P&amp;L</div><div class="value" id="unrealized">–</div></div>
+    <div class="card"><div class="label">Total Market Value</div><div class="value" id="marketValue">–</div></div>
+  </section>
+
+  <h2>Open positions</h2>
+  <table id="openTable">
+    <thead><tr>
+      <th data-key="symbol">Symbol</th><th data-key="quantity">Quantity</th><th data-key="averageCost">Avg cost</th>
+      <th data-key="marketPrice">Price</th><th data-key="marketValue">Market value</th><th data-key="unrealizedPnl">Unrealized P&amp;L</th>
+    </tr></thead>
+    <tbody></tbody>
+  </table>
+
+  <h2>Closed positions</h2>
+  <table id="closedTable">
+    <thead><tr><th data-key="symbol">Symbol</th><th data-key="realizedPnl">Realized P&amp;L</th></tr></thead>
+    <tbody></tbody>
+  </table>
+</div>
+
+<script>
+// State kept in the page: the last JSON from the server and the current sort per table.
+let data = null;
+const sortState = { openTable: { key: "symbol", asc: true }, closedTable: { key: "symbol", asc: true } };
+const money = new Intl.NumberFormat("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+
+// Values arrive as exact decimal strings; Number() is used only for display and sorting.
+function fmt(v) { return v === null ? "–" : money.format(Number(v)); }
+function signClass(v) { return v === null ? "" : Number(v) > 0 ? "gain" : Number(v) < 0 ? "loss" : ""; }
+
+function setCard(id, value, colour) {
+  const el = document.getElementById(id);
+  el.textContent = fmt(value);
+  el.className = "value " + (colour ? signClass(value) : "");
+}
+
+function renderTable(tableId, rows, columns, colourKeys) {
+  const { key, asc } = sortState[tableId];
+  const sorted = [...rows].sort((a, b) => {
+    const x = key === "symbol" ? a[key] : Number(a[key]);
+    const y = key === "symbol" ? b[key] : Number(b[key]);
+    return (x < y ? -1 : x > y ? 1 : 0) * (asc ? 1 : -1);
+  });
+  const tbody = document.querySelector(`#${tableId} tbody`);
+  tbody.replaceChildren();                       // clear old rows
+  for (const row of sorted) {
+    const tr = document.createElement("tr");
+    for (const col of columns) {
+      const td = document.createElement("td");
+      td.textContent = col === "symbol" || col === "quantity" ? (row[col] ?? "–") : fmt(row[col]);  // textContent, never innerHTML
+      if (colourKeys.includes(col)) td.className = signClass(row[col]);
+      tr.appendChild(td);
+    }
+    tbody.appendChild(tr);
+  }
+}
+
+function render() {
+  setCard("realized", data.totals.realizedPnl, true);
+  setCard("unrealized", data.totals.unrealizedPnl, true);
+  setCard("marketValue", data.totals.marketValue, false);
+  renderTable("openTable", data.open,
+      ["symbol", "quantity", "averageCost", "marketPrice", "marketValue", "unrealizedPnl"], ["unrealizedPnl"]);
+  renderTable("closedTable", data.closed, ["symbol", "realizedPnl"], ["realizedPnl"]);
+}
+
+function showMessage(text, isError) {
+  const el = document.getElementById("message");
+  el.textContent = text;
+  el.className = isError ? "error" : "";
+}
+
+async function load() {
+  const res = await fetch("/api/portfolio");
+  data = await res.json();
+  render();
+}
+
+async function upload() {
+  const file = document.getElementById("file").files[0];
+  if (!file) { showMessage("Choose a CSV file first.", true); return; }
+  const res = await fetch("/api/trades", { method: "POST", headers: { "Content-Type": "text/csv" }, body: await file.text() });
+  const body = await res.json();
+  if (!res.ok) { showMessage(body.error, true); return; }     // server rejected it; old data stays on screen
+  data = body;
+  render();
+  showMessage(`Loaded ${file.name}`, false);
+}
+
+// Click a column header to sort; click again to reverse.
+document.querySelectorAll("th[data-key]").forEach(th => th.addEventListener("click", () => {
+  const tableId = th.closest("table").id;
+  const s = sortState[tableId];
+  s.asc = s.key === th.dataset.key ? !s.asc : true;
+  s.key = th.dataset.key;
+  render();
+}));
+document.getElementById("upload").addEventListener("click", upload);
+load().catch(err => showMessage("Could not reach the server: " + err.message, true));
+</script>
+</body>
+</html>
