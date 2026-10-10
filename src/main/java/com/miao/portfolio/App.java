@@ -67,6 +67,11 @@ public final class App {
     private static final double BAYESIAN_DEMO_TAU = 0.05;
 
     public static void main(String[] args) throws IOException {
+        if (args.length > 0 && args[0].equals("--backtest")) {
+            // Multi-asset walk-forward backtest; see BacktestCli for options.
+            com.miao.portfolio.backtest.BacktestCli.main(java.util.Arrays.copyOfRange(args, 1, args.length));
+            return;
+        }
         boolean webMode = false;
         boolean optimizeMode = false;
         boolean bayesianMode = false;
