@@ -168,6 +168,41 @@ too, whenever that symbol is correlated with the ones the view names --
 Black-Litterman propagates information through the whole covariance
 structure, not just along the pick vector's literal entries.
 
+## Multi-asset backtest (`--backtest`)
+
+The optimizer above answers "how should I split my money today?". The backtest answers the harder question: **if I had followed each rule every month for the past 13 years, what would have happened?**
+
+```
+pip install yfinance
+python scripts/fetch_prices.py XIC.TO XSP.TO XBB.TO CGL.TO --start 2010-01-01
+java -jar target/portfolio-tracker.jar --backtest data/etf-prices.csv \
+     --benchmark XIC=0.3,XSP=0.3,XBB=0.4 --risk-free 0.02 --max-weight 0.4
+```
+
+**Universe.** Four Toronto-listed ETFs, one per asset class: Canadian equities (XIC), US equities (XSP, CAD-hedged), Canadian bonds (XBB) and gold (CGL). Prices are adjusted for distributions and converted to month-ends. Cash is deliberately not an asset: it barely moves, so a minimum-variance rule would simply hold cash. It enters only as the risk-free rate in the Sharpe ratio.
+
+**Method.** Walk-forward: at each month-end a rule sees only the previous 36 months of returns, sets target weights, and the portfolio is held for one month. Weights drift with prices between rebalances, and every trade back to target costs 10 bps. `BacktestTest` checks that a rule never sees the return it is about to earn.
+
+**Rules compared.** Equal weight; a fixed 60/40 stock/bond mix; inverse volatility; long-only minimum variance; and minimum variance with a 40% ceiling on any single asset class.
+
+**Results, Nov 2013 to Oct 2026 (156 months), after costs:**
+
+| Rule | Return / yr | Volatility / yr | Sharpe | Max drawdown | 2022 | Turnover / yr |
+|---|---|---|---|---|---|---|
+| Equal weight | 8.67% | 8.66% | 0.77 | 14.4% | -9.3% | 12% |
+| 60/40 (XIC/XSP/XBB = 30/30/40) | 7.93% | 8.73% | 0.68 | 15.6% | -12.1% | 9% |
+| Inverse volatility | 7.05% | 7.13% | 0.71 | 13.7% | -9.8% | 15% |
+| Minimum variance | 2.69% | 5.29% | 0.13 | 15.6% | -11.5% | 19% |
+| Minimum variance, 40% cap | 7.64% | 7.60% | 0.74 | 11.4% | -6.6% | 33% |
+
+**What I found.**
+
+1. **The lowest-volatility rule had the worst risk-adjusted return.** Minimum variance put about 90% of the portfolio in bonds, because bonds had been the calmest asset class over the trailing 36 months. When rates rose in 2022 that concentration became the main risk: the portfolio fell 15.6% from its July 2020 peak, as far as the 60/40 mix, while earning far less in normal years. Low past volatility is not the same as low future risk.
+2. **A per-asset-class cap fixed most of it.** Limiting any asset class to 40%, the way institutional investment policies set ranges, forced the remainder into Canadian equities and gold. Sharpe rose from 0.13 to 0.74, the maximum drawdown became the lowest of all rules (11.4%), and 2022 was the least bad year (-6.6%). The cost is higher turnover, because the cap binds often.
+3. **Equal weight was still hardest to beat on return.** With only four asset classes, the error in estimating a covariance matrix from 36 months of data seems to cost about as much as optimizing gains. Its edge over 60/40 comes mostly from holding gold, which behaved differently from stocks and bonds in 2022.
+
+**Limitations.** The risk-free rate is a flat 2% assumption rather than the actual T-bill series. CGL only starts in October 2010, which sets the start date. The last month in the run above is partial. Four assets and one 13-year window are a small sample, so these are observations about this period, not general laws.
+
 ## Design notes
 
 - **`Trade`** is an immutable value object — a booked trade is a historical

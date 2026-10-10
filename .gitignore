@@ -4,3 +4,7 @@ target/
 *.iml
 .vscode/
 .DS_Store
+
+# downloaded prices and backtest output (regenerate with scripts/fetch_prices.py)
+data/
+backtest-results.csv
