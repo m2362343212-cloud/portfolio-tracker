@@ -130,6 +130,39 @@ class BacktestTest {
     }
 
     @Test
+    void cappedProjectionMatchesHandCalculation() {
+        // tau = -0.2: (0.9+0.2 capped at 0.5, 0.1+0.2, 0+0.2)
+        double[] w = CappedMinimumVariance.projectCappedSimplex(new double[]{0.9, 0.1, 0.0}, 0.5);
+        assertEquals(0.5, w[0], 1e-9);
+        assertEquals(0.3, w[1], 1e-9);
+        assertEquals(0.2, w[2], 1e-9);
+    }
+
+    @Test
+    void cappedMinimumVarianceRespectsTheCap() {
+        // asset C is far calmer, so uncapped min variance would pile into it
+        double[][] past = {{0.05, -0.04, 0.001}, {-0.06, 0.05, -0.001}, {0.04, -0.03, 0.002}, {-0.05, 0.06, 0.000}};
+        double[] w = new CappedMinimumVariance(0.4).weights(List.of("A", "B", "C"), past);
+        double sum = 0;
+        for (double x : w) {
+            assertTrue(x <= 0.4 + 1e-9 && x >= -1e-9);
+            sum += x;
+        }
+        assertEquals(1.0, sum, 1e-9);
+        assertEquals(0.4, w[2], 1e-6);
+    }
+
+    @Test
+    void aCapOfOneGivesTheUncappedAnswer() {
+        double[][] past = {{0.02, 0.01, -0.01}, {-0.03, 0.00, 0.02}, {0.01, 0.02, 0.00}, {0.04, -0.01, 0.01}};
+        double[] capped = new CappedMinimumVariance(1.0).weights(List.of("A", "B", "C"), past);
+        double[] plain = Strategies.minimumVariance().weights(List.of("A", "B", "C"), past);
+        for (int i = 0; i < 3; i++) {
+            assertEquals(plain[i], capped[i], 1e-4);
+        }
+    }
+
+    @Test
     void fixedWeightsMustSumToOne() {
         assertThrows(IllegalArgumentException.class,
                 () -> Strategies.fixedWeights("bad", Map.of("A", 0.6, "B", 0.6)));

@@ -14,7 +14,7 @@ import java.util.Map;
  *
  * <pre>
  * java -jar portfolio-tracker.jar --backtest prices.csv [--benchmark XIC=0.6,XBB=0.4]
- *      [--lookback 36] [--cost-bps 10] [--risk-free 0.02] [--out backtest-results.csv]
+ *      [--lookback 36] [--cost-bps 10] [--risk-free 0.02] [--max-weight 0.4] [--out backtest-results.csv]
  * </pre>
  *
  * Prices may be daily or monthly; they are converted to month-end prices first.
@@ -26,13 +26,14 @@ public final class BacktestCli {
 
     public static void main(String[] args) throws IOException {
         if (args.length == 0) {
-            throw new IllegalArgumentException("usage: --backtest prices.csv [--benchmark A=0.6,B=0.4] [--lookback 36] [--cost-bps 10] [--risk-free 0.02] [--out file.csv]");
+            throw new IllegalArgumentException("usage: --backtest prices.csv [--benchmark A=0.6,B=0.4] [--lookback 36] [--cost-bps 10] [--risk-free 0.02] [--max-weight 0.4] [--out file.csv]");
         }
         Path pricesPath = Path.of(args[0]);
         Map<String, Double> benchmark = null;
         int lookback = 36;
         double costBps = 10;
         double riskFree = 0.0;
+        Double maxWeight = null;
         Path out = Path.of("backtest-results.csv");
         for (int i = 1; i < args.length; i += 2) {
             if (i + 1 >= args.length) {
@@ -45,6 +46,7 @@ public final class BacktestCli {
                 case "--cost-bps" -> costBps = Double.parseDouble(v);
                 case "--risk-free" -> riskFree = Double.parseDouble(v);
                 case "--out" -> out = Path.of(v);
+                case "--max-weight" -> maxWeight = Double.parseDouble(v);
                 default -> throw new IllegalArgumentException("unknown option " + args[i]);
             }
         }
@@ -57,6 +59,9 @@ public final class BacktestCli {
         }
         strategies.add(Strategies.inverseVolatility());
         strategies.add(Strategies.minimumVariance());
+        if (maxWeight != null) {
+            strategies.add(new CappedMinimumVariance(maxWeight));
+        }
 
         Backtester backtester = new Backtester(lookback, costBps);
         List<BacktestResult> results = new ArrayList<>();
