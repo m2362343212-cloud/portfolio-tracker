@@ -293,13 +293,3 @@ Unit tests live under `src/test/java` and cover:
   constructors, the BL-to-`PortfolioOptimizer` bridge, and the error cases.
 
 Run them with `mvn test`.
-
-## Suggested resume bullets
-
-> **Portfolio Tracker — Personal Project (Java)**
-> - Designed and built a Java trade-blotter and P&L tracker from scratch, applying OOP principles (immutable value objects, encapsulated domain logic, custom exception types) across a 6-package Maven project with unit tests
-> - Implemented an average-cost-basis accounting engine using `BigDecimal` for exact decimal precision, correctly handling weighted-average cost blending, realized P&L on partial/full sells, and edge cases like fully-closed positions
-> - Implemented a mean-variance portfolio optimizer from scratch (no external optimization library) using projected gradient descent with a from-scratch simplex projection to enforce long-only, fully-invested constraints, plus a step size derived from a Gershgorin-circle bound on the covariance matrix's spectral radius for numerical stability
-> - Implemented Bayesian portfolio construction (Black-Litterman) from scratch, including a from-scratch matrix-inversion routine (Gauss-Jordan with partial pivoting), to combine market-implied equilibrium returns with investor views into a posterior return/covariance estimate for the optimizer
-> - Built a live local web dashboard on Java's built-in HTTP server (`com.sun.net.httpserver`), rendering portfolio state as a styled, dark-mode-aware HTML report with zero external dependencies
-> - Wrote a CSV ingestion layer with line-level error reporting and 82 JUnit 5 unit tests covering core accounting logic, the optimizer's and Black-Litterman model's correctness (numbers verified by hand, not just plausibility checks), parsing edge cases, and HTML rendering (including output escaping)
