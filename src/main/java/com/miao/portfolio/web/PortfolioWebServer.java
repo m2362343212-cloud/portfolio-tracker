@@ -18,6 +18,7 @@ import java.util.Map;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.function.LongSupplier;
 
 /**
  * Local web dashboard on the JDK's built-in HTTP server.
@@ -27,24 +28,46 @@ import java.util.concurrent.atomic.AtomicReference;
  *   GET  /report         the server-rendered HTML report, including any --optimize / --bayesian results
  *   GET  /api/portfolio  current portfolio as JSON
  *   POST /api/trades     body = trade CSV text; replaces the trade history, returns new JSON
+ *   GET  /healthz        "ok" (for hosting platforms' health checks)
+ *
+ * <p><b>Public-demo mode.</b> By default the server holds ONE portfolio and every upload replaces
+ * it, which is right for a dashboard on your own machine but wrong on the internet: one visitor's
+ * upload would change what every other visitor sees. In public-demo mode an upload is validated
+ * and the resulting JSON is returned to the uploader only; the shared portfolio never changes.
+ * Uploads are also rate-limited, and requests are served by a small thread pool so one slow
+ * client cannot block the rest.</p>
  */
 public final class PortfolioWebServer {
 
     /** Uploads larger than this are rejected (stops a huge body from exhausting memory). */
     static final int MAX_UPLOAD_BYTES = 1_000_000;
 
+    /** Public-demo mode: at most this many upload attempts per minute, across all visitors. */
+    static final int MAX_UPLOADS_PER_MINUTE = 60;
+
+    private static final String CSP_PAGE = "default-src 'none'; style-src 'unsafe-inline'; "
+            + "script-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'; frame-ancestors 'none'";
+    private static final String CSP_STATIC = "default-src 'none'; style-src 'unsafe-inline'; "
+            + "base-uri 'none'; form-action 'none'; frame-ancestors 'none'";   // no scripts at all
+
     private final HttpServer server;
-    private final ExecutorService executor = Executors.newSingleThreadExecutor();
+    private final ExecutorService executor;
     private final AtomicReference<Portfolio> current;
     private final Map<String, BigDecimal> marketPrices;
     private final List<HtmlReportRenderer.ReturnsTable> returnsTables;
     private final List<HtmlReportRenderer.WeightTable> weightTables;
+    private final boolean publicDemo;
+    private final LongSupplier clockMillis;
+    private long windowStartMillis;
+    private int uploadsInWindow;
 
     public PortfolioWebServer(Portfolio portfolio, Map<String, BigDecimal> marketPrices, int port) throws IOException {
         this(portfolio, marketPrices, List.of(), List.of(), port);
     }
 
     /**
+     * Local mode: listens on localhost only, one shared portfolio.
+     *
      * @param returnsTables Black-Litterman prior-vs-posterior expected-return tables, shown on /report (from --bayesian); empty if none.
      * @param weightTables   suggested-weights tables, shown on /report (from --optimize and/or --bayesian); empty if none.
      */
@@ -52,16 +75,43 @@ public final class PortfolioWebServer {
                               List<HtmlReportRenderer.ReturnsTable> returnsTables,
                               List<HtmlReportRenderer.WeightTable> weightTables,
                               int port) throws IOException {
+        this(portfolio, marketPrices, returnsTables, weightTables, "localhost", port, false, System::currentTimeMillis);
+    }
+
+    /**
+     * @param host          interface to bind: "localhost" on your machine, "0.0.0.0" on a hosting platform.
+     * @param publicDemo    true = uploads never change the shared portfolio (see class comment).
+     * @param clockMillis   time source, replaceable in tests (used by the upload rate limit).
+     */
+    public PortfolioWebServer(Portfolio portfolio, Map<String, BigDecimal> marketPrices,
+                              List<HtmlReportRenderer.ReturnsTable> returnsTables,
+                              List<HtmlReportRenderer.WeightTable> weightTables,
+                              String host, int port, boolean publicDemo, LongSupplier clockMillis) throws IOException {
         this.current = new AtomicReference<>(portfolio);
         this.marketPrices = marketPrices;
         this.returnsTables = returnsTables;
         this.weightTables = weightTables;
-        this.server = HttpServer.create(new InetSocketAddress("localhost", port), 0);
+        this.publicDemo = publicDemo;
+        this.clockMillis = clockMillis;
+        this.windowStartMillis = clockMillis.getAsLong();
+        this.executor = publicDemo ? Executors.newFixedThreadPool(4) : Executors.newSingleThreadExecutor();
+        this.server = HttpServer.create(new InetSocketAddress(host, port), 0);
         server.createContext("/", this::handlePage);
         server.createContext("/report", this::handleReport);
+        server.createContext("/healthz", ex -> send(ex, 200, "text/plain", "ok"));
         server.createContext("/api/portfolio", this::handleGetPortfolio);
         server.createContext("/api/trades", this::handlePostTrades);
         server.setExecutor(executor);
+    }
+
+    /** Fixed one-minute window shared by all visitors; true if this upload may proceed. */
+    private synchronized boolean allowUpload() {
+        long now = clockMillis.getAsLong();
+        if (now - windowStartMillis >= 60_000) {
+            windowStartMillis = now;
+            uploadsInWindow = 0;
+        }
+        return ++uploadsInWindow <= MAX_UPLOADS_PER_MINUTE;
     }
 
     private void handlePage(HttpExchange ex) throws IOException {
@@ -95,6 +145,11 @@ public final class PortfolioWebServer {
             send(ex, 405, "application/json", JsonRenderer.error("Use POST"));
             return;
         }
+        if (publicDemo && !allowUpload()) {
+            ex.getResponseHeaders().set("Retry-After", "60");
+            send(ex, 429, "application/json", JsonRenderer.error("Too many uploads, try again in a minute"));
+            return;
+        }
         byte[] body = ex.getRequestBody().readNBytes(MAX_UPLOAD_BYTES + 1);
         if (body.length > MAX_UPLOAD_BYTES) {
             send(ex, 413, "application/json", JsonRenderer.error("File too large (limit 1 MB)"));
@@ -105,7 +160,9 @@ public final class PortfolioWebServer {
             Portfolio fresh = new Portfolio();
             fresh.applyTrades(trades);
             String json = JsonRenderer.render(fresh, marketPrices);   // fails here if a price is missing
-            current.set(fresh);                                        // only swap in once everything succeeded
+            if (!publicDemo) {
+                current.set(fresh);                                    // only swap in once everything succeeded
+            }                                                          // (public demo: answer the uploader only)
             send(ex, 200, "application/json", json);
         } catch (RuntimeException e) {                                 // bad CSV, selling more than held, missing price
             send(ex, 400, "application/json", JsonRenderer.error(e.getMessage()));
@@ -116,6 +173,16 @@ public final class PortfolioWebServer {
         byte[] bytes = text.getBytes(StandardCharsets.UTF_8);
         ex.getResponseHeaders().set("Content-Type", type + "; charset=utf-8");
         ex.getResponseHeaders().set("X-Content-Type-Options", "nosniff");
+        ex.getResponseHeaders().set("Referrer-Policy", "no-referrer");
+        ex.getResponseHeaders().set("X-Frame-Options", "DENY");
+        if (type.equals("text/html")) {
+            // The dashboard page needs its own inline script; the server-rendered report has none.
+            boolean dashboard = ex.getRequestURI().getPath().equals("/");
+            ex.getResponseHeaders().set("Content-Security-Policy", dashboard ? CSP_PAGE : CSP_STATIC);
+        }
+        if (type.equals("application/json")) {
+            ex.getResponseHeaders().set("Cache-Control", "no-store");
+        }
         ex.sendResponseHeaders(status, bytes.length);
         try (OutputStream out = ex.getResponseBody()) {
             out.write(bytes);

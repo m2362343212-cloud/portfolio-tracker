@@ -26,6 +26,7 @@ mvn package
 java -jar target/portfolio-tracker.jar                              # console report, bundled sample data
 java -jar target/portfolio-tracker.jar trades.csv prices.csv        # console report, your own files
 java -jar target/portfolio-tracker.jar --web                        # web dashboard at http://localhost:8080/, sample data
+java -jar target/portfolio-tracker.jar --public-demo                # same dashboard for a hosting platform (see "Putting it online")
 java -jar target/portfolio-tracker.jar --web trades.csv prices.csv  # web dashboard, your own files
 java -jar target/portfolio-tracker.jar --optimize                   # also suggests long-only min-variance weights, sample data
 java -jar target/portfolio-tracker.jar --bayesian                   # Black-Litterman posterior + optimizer, sample data
@@ -75,7 +76,26 @@ Design choices:
 
 - **Money travels as strings** (`"1435.00"`), not JSON numbers, so the exact `BigDecimal` value reaches the browser; JavaScript converts to a number only to display and sort.
 - **All-or-nothing uploads.** A new portfolio is built from the uploaded CSV and swapped in only if every step succeeds. A malformed row, a sell larger than the position, or a symbol with no market price returns `400` with the reason, and the previous portfolio stays on screen.
-- **Basic hardening.** Uploads are capped at 1 MB (`413`), wrong HTTP methods get `405`, table cells are written with `textContent` rather than `innerHTML`, and the server listens on `localhost` only.
+- **Basic hardening.** Uploads are capped at 1 MB (`413`), wrong HTTP methods get `405`, table cells are written with `textContent` rather than `innerHTML`, and the server listens on `localhost` only (unless started with `--public-demo`, below).
+
+## Putting it online (`--public-demo`)
+
+On your own machine the server keeps one portfolio and every upload replaces it. On the internet that would be a bug: one visitor's upload would change what every other visitor sees. `--public-demo` fixes that and adds the basics a public page needs:
+
+```
+java -jar target/portfolio-tracker.jar --public-demo
+```
+
+| What | Behaviour |
+|---|---|
+| Uploads | Validated exactly as before, but the result goes back **only to the uploader**. The shared sample portfolio and `/report` never change. |
+| Abuse limits | 1 MB body cap (`413`), at most 60 uploads a minute across all visitors (`429` with `Retry-After`), 4 worker threads so one slow client cannot block the rest. |
+| Headers | `Content-Security-Policy` (the report page allows no scripts; the dashboard allows only its own inline script), `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, `X-Content-Type-Options: nosniff`, `Cache-Control: no-store` on JSON. |
+| Hosting | Binds `0.0.0.0` and reads the port from `$PORT` (default 8080); `HOST` overrides the interface. `GET /healthz` returns `ok` for health checks. |
+
+Any host that can run a JAR works. Build with `mvn package -DskipTests`, then use `java -jar target/portfolio-tracker.jar --public-demo` as the start command.
+
+What this deliberately does **not** do: there are no accounts, uploads are never stored, and the rate limit is global rather than per user (behind a proxy the client address cannot be trusted without extra setup). The dashboard's script is inline, so its CSP has to allow `'unsafe-inline'` for scripts; moving it to a separate file with a nonce would tighten that. The demo prices are the bundled sample prices, not live quotes.
 
 `PortfolioWebServerTest` starts the server on a free port and checks these responses with real HTTP requests.
 
@@ -252,6 +272,11 @@ rebalancing is a target weight vector, not a trade list.
 
 Unit tests live under `src/test/java` and cover:
 
+- `PortfolioWebServerPublicDemoTest` — in public-demo mode an upload reaches
+  only the uploader (another visitor and `/report` are unchanged), the
+  60-uploads-a-minute limit returns `429` and resets with a fake clock, the
+  1 MB cap still returns `413`, and the health check and security headers are
+  present. `AppTest` covers `$PORT` parsing.
 - `PositionTest` — weighted-average cost across multiple buys, realized P&L
   on a partial sell, average-cost reset on a full close, the
   `InsufficientPositionException` case, and unrealized P&L against a

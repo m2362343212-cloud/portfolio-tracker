@@ -35,7 +35,7 @@ import java.util.Map;
  * {@link Portfolio}, and either prints a text P&amp;L report or serves it
  * as a live local web dashboard.
  *
- * <p>Usage: {@code java -jar portfolio-tracker.jar [--web] [--optimize] [--bayesian] [trades.csv] [prices.csv] [historical-prices.csv]}</p>
+ * <p>Usage: {@code java -jar portfolio-tracker.jar [--web | --public-demo] [--optimize] [--bayesian] [trades.csv] [prices.csv] [historical-prices.csv]}</p>
  *
  * <p>{@code trades.csv} and {@code prices.csv} are optional; with neither
  * given, a bundled sample trade blotter and price sheet are used so the
@@ -73,12 +73,14 @@ public final class App {
             return;
         }
         boolean webMode = false;
+        boolean publicDemo = false;
         boolean optimizeMode = false;
         boolean bayesianMode = false;
         List<String> positional = new ArrayList<>();
         for (String arg : args) {
             switch (arg) {
                 case "--web" -> webMode = true;
+                case "--public-demo" -> { webMode = true; publicDemo = true; }
                 case "--optimize" -> optimizeMode = true;
                 case "--bayesian" -> bayesianMode = true;
                 default -> positional.add(arg);
@@ -128,10 +130,28 @@ public final class App {
         }
 
         if (webMode) {
-            PortfolioWebServer server = new PortfolioWebServer(portfolio, marketPrices, returnsTables, weightTables, WEB_PORT);
+            // Local: localhost:8080. Public demo (hosting platform): every interface, port from $PORT,
+            // and uploads never change what other visitors see.
+            String host = System.getenv().getOrDefault("HOST", publicDemo ? "0.0.0.0" : "localhost");
+            int port = parsePort(System.getenv("PORT"), WEB_PORT);
+            PortfolioWebServer server = new PortfolioWebServer(portfolio, marketPrices, returnsTables, weightTables,
+                    host, port, publicDemo, System::currentTimeMillis);
             server.start();
             System.out.println("Portfolio dashboard running at " + server.getUrl());
             System.out.println("Press Ctrl+C to stop.");
+        }
+    }
+
+    /** The $PORT a hosting platform assigns, or the default when it is unset or not a valid port number. */
+    static int parsePort(String value, int fallback) {
+        if (value == null || value.isBlank()) {
+            return fallback;
+        }
+        try {
+            int port = Integer.parseInt(value.trim());
+            return port >= 1 && port <= 65535 ? port : fallback;
+        } catch (NumberFormatException e) {
+            return fallback;
         }
     }
 
